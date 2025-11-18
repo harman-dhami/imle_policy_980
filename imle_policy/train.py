@@ -91,6 +91,9 @@ def get_dataset_class(task):
     elif task == 'kitchen':
         from imle_policy.dataloaders.dataset_kitchen import PolicyDataset
         from imle_policy.evaluation.eval_policy_kitchen import evaluate
+    elif task == 'zarr':
+        from imle_policy.dataloaders.dataset_zarr import PolicyDataset
+        from imle_policy.evaluation.eval_policy_zarr import evaluate
     else:
         from imle_policy.dataloaders.dataset_robomimic import PolicyDataset
         from imle_policy.evaluation.eval_policy_robomimic import evaluate
@@ -150,6 +153,10 @@ def process_batch(nbatch, nets, device, args_dict):
         obs_cond = nobs.flatten(start_dim=1)
 
     elif args_dict['task'] == 'kitchen':
+        nobs = nbatch['obs'][:,:args_dict['obs_horizon']].to(device)
+        obs_cond = nobs.flatten(start_dim=1)
+    
+    elif args_dict['task'] == 'zarr':
         nobs = nbatch['obs'][:,:args_dict['obs_horizon']].to(device)
         obs_cond = nobs.flatten(start_dim=1)
 
@@ -222,10 +229,14 @@ def train_diffusion_step(nets, noise_scheduler, obs_cond, naction, B, device):
 def train_rs_imle_step(nets, obs_cond, naction, B, args_dict, device):
     noise = torch.randn(B * args_dict['n_samples_per_condition'], *naction.shape[1:], device=device)
     repeated_obs_cond = obs_cond.repeat_interleave(args_dict['n_samples_per_condition'], dim=0)
-
+    
     pred_actions = nets['policy_net'](repeated_obs_cond, noise)
+
+    
     pred_actions = pred_actions.reshape(B, args_dict['n_samples_per_condition'], *naction.shape[1:])
 
+    
+    
     # Compute IMLE loss
     return rs_imle_loss(naction, pred_actions, args_dict['epsilon'])
 

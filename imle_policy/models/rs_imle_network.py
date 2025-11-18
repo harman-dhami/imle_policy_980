@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 
@@ -207,8 +208,8 @@ class ConditionalResidualBlock1D(nn.Module):
 
 class GeneratorConditionalUnet1D(nn.Module):
     def __init__(self,
-        input_dim,
         global_cond_dim,
+        input_dim=12,
         down_dims=[256,512,1024],
         kernel_size=5,
         n_groups=8
@@ -224,14 +225,21 @@ class GeneratorConditionalUnet1D(nn.Module):
         n_groups: Number of groups for GroupNorm
         """
 
+        
+
+        
+        
         super().__init__()
-        all_dims = [input_dim] + list(down_dims)
-        start_dim = down_dims[0]
-
-        cond_dim = global_cond_dim
-
+        
+        
+        self.sample_proj = nn.Conv1d(12, down_dims[0], kernel_size=1)
+        self.cond_proj = nn.Conv1d(global_cond_dim, down_dims[0], kernel_size=1)
+        
+        all_dims = down_dims
         in_out = list(zip(all_dims[:-1], all_dims[1:]))
         mid_dim = all_dims[-1]
+        cond_dim = down_dims[0]
+        
         self.mid_modules = nn.ModuleList([
             ConditionalResidualBlock1D(
                 mid_dim, mid_dim, cond_dim=cond_dim,
@@ -256,22 +264,27 @@ class GeneratorConditionalUnet1D(nn.Module):
                 Downsample1d(dim_out) if not is_last else nn.Identity()
             ]))
 
+        reversed_in_out = list(reversed(in_out))
         up_modules = nn.ModuleList([])
-        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
-            is_last = ind >= (len(in_out) - 1)
+        x_channels = mid_dim  # mid output channels
+        for idx, (dim_in, dim_out) in enumerate(reversed_in_out):
+            skip_channels = dim_out
+            in_ch = x_channels + skip_channels
+            out_ch = dim_out  # not skip_channels
+            is_last = idx == len(reversed_in_out) - 1
             up_modules.append(nn.ModuleList([
-                ConditionalResidualBlock1D(
-                    dim_out*2, dim_in, cond_dim=cond_dim,
-                    kernel_size=kernel_size, n_groups=n_groups),
-                ConditionalResidualBlock1D(
-                    dim_in, dim_in, cond_dim=cond_dim,
-                    kernel_size=kernel_size, n_groups=n_groups),
-                Upsample1d(dim_in) if not is_last else nn.Identity()
+                ConditionalResidualBlock1D(in_ch, out_ch, cond_dim=cond_dim,
+                                        kernel_size=kernel_size, n_groups=n_groups),
+                ConditionalResidualBlock1D(out_ch, out_ch, cond_dim=cond_dim,
+                                        kernel_size=kernel_size, n_groups=n_groups),
+                Upsample1d(out_ch) if not is_last else nn.Identity()
             ]))
-
+            x_channels = out_ch  # next iteration input
+            
+        start_dim = up_modules[-1][1].out_channels
         final_conv = nn.Sequential(
             Conv1dBlock(start_dim, start_dim, kernel_size=kernel_size),
-            nn.Conv1d(start_dim, input_dim, 1),
+            nn.Conv1d(start_dim, 12, 1),
         )
 
         self.up_modules = up_modules
@@ -289,13 +302,14 @@ class GeneratorConditionalUnet1D(nn.Module):
         output: (B,T,input_dim)
         """
         # (B,T,C)
-        sample = sample.moveaxis(-1,-2)
+        #sample = sample.moveaxis(-1,-2)
         # (B,C,T)
+        x = sample.permute(0, 2, 1)
+        x = self.sample_proj(x)
 
+        global_feature = self.cond_proj(global_cond.unsqueeze(-1))
+        global_feature = global_feature.flatten(1)
 
-        global_feature = global_cond
-
-        x = sample
         h = []
         for idx, (resnet, resnet2, downsample) in enumerate(self.down_modules):
             x = resnet(x, global_feature)
@@ -307,7 +321,10 @@ class GeneratorConditionalUnet1D(nn.Module):
             x = mid_module(x, global_feature)
 
         for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
-            x = torch.cat((x, h.pop()), dim=1)
+            skip = h.pop()
+            if skip.shape[2] != x.shape[2]:
+                x = F.interpolate(x, size=skip.shape[2], mode='linear', align_corners=False)
+            x = torch.cat((x, skip), dim=1)
             x = resnet(x, global_feature)
             x = resnet2(x, global_feature)
             x = upsample(x)
@@ -315,6 +332,7 @@ class GeneratorConditionalUnet1D(nn.Module):
         x = self.final_conv(x)
 
         # (B,C,T)
-        x = x.moveaxis(-1,-2)
+        x = x.permute(0,2,1)
+
         # (B,T,C)
         return x

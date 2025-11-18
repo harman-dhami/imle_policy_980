@@ -177,3 +177,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+wandb/
+recorded_data_combined_21-50-29/
+saved_weights/
+generated_datasets/

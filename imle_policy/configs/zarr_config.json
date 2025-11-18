@@ -1,0 +1,12 @@
+{
+    "dataset_path": "./generated_datasets/stand_bounce.zarr/data",
+    "obs_dim": 45,
+    "action_dim": 4,
+    "num_epochs": 10,
+    "batch_size": 64,
+    "obs_horizon": 2,
+    "action_horizon": 1,
+    "pred_horizon": 1,
+    "num_cameras": 0,
+    "num_diffusion_iters": 1000
+}
