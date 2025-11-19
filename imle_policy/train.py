@@ -13,6 +13,9 @@ import sys
 import argparse
 import json
 import logging
+import torch.distributed as dist 
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 # Add the parent directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -271,9 +274,11 @@ def save_checkpoint(args_dict, nets, ema, epoch_idx, best_mean_success, stats, r
     
     return best_mean_success
 
-def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None, run_name=None, evaluate_fn=None):
+def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None, run_name=None, evaluate_fn=None, is_main=True):
     train_step = 0
     best_mean_success = 0
+    
+    scaler = torch.amp.GradScaler("cuda")
     
     optimizer = torch.optim.AdamW(
         params=nets.parameters(),
@@ -292,8 +297,11 @@ def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None,
 
     with tqdm(range(args_dict['num_epochs']), desc='Epoch') as tglobal:
         for epoch_idx in tglobal:
+            if dist.is_initialized():
+                dataloader.sampler.set_epoch(epoch_idx)
             epoch_loss = list()
-            wandb.log({'epoch': epoch_idx}, step=train_step)
+            if is_main:
+                wandb.log({'epoch': epoch_idx}, step=train_step)
             
             with tqdm(dataloader, desc='Batch', leave=False) as tepoch:
                 for nbatch in tepoch:
@@ -305,12 +313,14 @@ def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None,
                         loss = train_diffusion_step(nets, noise_scheduler, obs_cond, naction, B, device)
                     elif args_dict['method'] == 'rs_imle':
                         loss, loss_logs = train_rs_imle_step(nets, obs_cond, naction, B, args_dict, device)
-                        wandb.log(loss_logs, step=train_step)
+                        if is_main:
+                            wandb.log(loss_logs, step=train_step)
                     elif args_dict['method'] == 'flow_matching':
                         loss = train_flow_matching_step(nets, obs_cond, naction, B, args_dict, device)
 
                     if loss == 0:
-                        wandb.log({"zero_loss": 1}, step=train_step)
+                        if is_main:
+                            wandb.log({"zero_loss": 1}, step=train_step)
                     else:
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(nets.parameters(), 1.0)
@@ -318,32 +328,46 @@ def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None,
                         optimizer.zero_grad()
                         lr_scheduler.step()
                         ema.step(nets.parameters())
-                        wandb.log({"zero_loss": 0}, step=train_step)
+                        if is_main:
+                            wandb.log({"zero_loss": 0}, step=train_step)
 
                     loss_cpu = loss.item()
                     epoch_loss.append(loss_cpu)
-                    tepoch.set_postfix(loss=loss_cpu)
-                    wandb.log({'loss': loss_cpu}, step=train_step)
+                    
+                    if is_main:
+                        tepoch.set_postfix(loss=loss_cpu)
+                        wandb.log({'loss': loss_cpu}, step=train_step)
+                        
                     train_step += 1
 
-            if (epoch_idx % 50 == 0):
+            if is_main and (epoch_idx % 50 == 0):
                 best_mean_success = save_checkpoint(
                     args_dict, nets, ema, epoch_idx, best_mean_success,
                     stats, run_name, train_step, evaluate_fn
                 )
-
-            tglobal.set_postfix(loss=np.mean(epoch_loss))
+            if is_main:
+                tglobal.set_postfix(loss=np.mean(epoch_loss))
 
 def main():
     args = parse_args()
     args_dict = vars(args)
+    
+    #DDP
+    dist.init_process_group(backend='nccl')
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+    is_main = (dist.get_rank() == 0)
     
     # Load task-specific config
     task_config = load_config(args.task)
     args_dict.update(task_config)
     
     # Setup wandb
-    run_name = setup_wandb(args_dict)
+    if is_main:
+        run_name = setup_wandb(args_dict)
+    else:
+        run_name = None
     
     # Set random seeds
     np.random.seed(args_dict['seed'])
@@ -361,26 +385,38 @@ def main():
         dataset_percentage=args_dict['dataset_percentage']
     )
     
+    sampler = DistributedSampler(dataset)
+    
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args_dict['batch_size'],
-        num_workers=11,
-        shuffle=True,
+        num_workers=8,
+        shuffle=False,
         pin_memory=True,
+        sampler=sampler,
         persistent_workers=True
     )
     
     # Save dataset stats
-    stats = dataset.stats
-    torch.save(stats, f'saved_weights/{run_name}/stats.pth')
+    
+    if is_main:
+        stats = dataset.stats
+        torch.save(stats, f'saved_weights/{run_name}/stats.pth')
+    else:
+        stats = None
     
     # Create networks
-    device = torch.device('cuda')
     nets, noise_scheduler = create_networks(args_dict)
+    
     nets = nets.to(device)
+    for k in nets:
+        nets[k] = nets[k].to(device)
+        nets[k] = DDP(nets[k], device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     
     # Train
-    train(args_dict, nets, dataloader, device, noise_scheduler, stats, run_name, evaluate_fn)
+    train(args_dict, nets, dataloader, device, noise_scheduler, stats, run_name if is_main else None, evaluate_fn, is_main=is_main)
+    
+    dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()
