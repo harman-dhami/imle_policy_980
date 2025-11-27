@@ -175,7 +175,7 @@ class ConditionalResidualBlock1D(nn.Module):
         self.cond_encoder = nn.Sequential(
             nn.Mish(),
             nn.Linear(cond_dim, cond_channels),
-            nn.Unflatten(-1, (-1, 1))
+            nn.Unflatten(-1, (2, out_channels, 1))
         )
 
         # make sure dimensions compatible
@@ -192,9 +192,11 @@ class ConditionalResidualBlock1D(nn.Module):
         '''
         out = self.blocks[0](x)
         embed = self.cond_encoder(cond)
+        
+        #embed = embed.view(embed.shape[0], 2, self.out_channels, 1)
 
-        embed = embed.reshape(
-            embed.shape[0], 2, self.out_channels, 1)
+        #embed = embed.reshape(
+            #embed.shape[0], 2, self.out_channels, 1)
         scale = embed[:,0,...]
         bias = embed[:,1,...]
         out = scale * out + bias
@@ -231,14 +233,16 @@ class GeneratorConditionalUnet1D(nn.Module):
         
         super().__init__()
         
+        self.global_cond_dim = global_cond_dim
         
+        cond_dim = down_dims[0]
         self.sample_proj = nn.Conv1d(12, down_dims[0], kernel_size=1)
-        self.cond_proj = nn.Conv1d(global_cond_dim, down_dims[0], kernel_size=1)
+        self.cond_proj = nn.Linear(global_cond_dim, cond_dim)
         
         all_dims = down_dims
         in_out = list(zip(all_dims[:-1], all_dims[1:]))
         mid_dim = all_dims[-1]
-        cond_dim = down_dims[0]
+        
         
         self.mid_modules = nn.ModuleList([
             ConditionalResidualBlock1D(
@@ -304,11 +308,13 @@ class GeneratorConditionalUnet1D(nn.Module):
         # (B,T,C)
         #sample = sample.moveaxis(-1,-2)
         # (B,C,T)
-        x = sample.permute(0, 2, 1)
+        #print("global_cond at forward:", global_cond.shape)
+
+        x = sample.permute(0, 2, 1).contiguous()
         x = self.sample_proj(x)
 
-        global_feature = self.cond_proj(global_cond.unsqueeze(-1))
-        global_feature = global_feature.flatten(1)
+        global_feature = self.cond_proj(global_cond)
+        #global_feature = global_feature.flatten(1)
 
         h = []
         for idx, (resnet, resnet2, downsample) in enumerate(self.down_modules):
@@ -332,7 +338,7 @@ class GeneratorConditionalUnet1D(nn.Module):
         x = self.final_conv(x)
 
         # (B,C,T)
-        x = x.permute(0,2,1)
+        x = x.permute(0,2,1).contiguous()
 
         # (B,T,C)
         return x

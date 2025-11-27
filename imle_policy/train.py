@@ -16,6 +16,7 @@ import logging
 import torch.distributed as dist 
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+import time
 
 # Add the parent directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,7 +36,7 @@ def parse_args():
                       help='Training method (rs_imle, diffusion, flow_matching)')
     parser.add_argument('--epsilon', type=float, default=0.03,
                       help='IMLE epsilon parameter')
-    parser.add_argument('--n_samples_per_condition', type=int, default=20,
+    parser.add_argument('--n_samples_per_condition', type=int, default=3,
                       help='Number of samples per condition')
     parser.add_argument('--dataset_percentage', type=float, default=1.0,
                       help='Percentage of dataset to use')
@@ -259,22 +260,37 @@ def save_checkpoint(args_dict, nets, ema, epoch_idx, best_mean_success, stats, r
     ema_nets = copy.deepcopy(nets)
     ema.copy_to(ema_nets.parameters())
 
-    if (args_dict['task'] != 'pusht_real') and (args_dict['task'] != 'shoe_rack_real'):
-        mean_cov, mean_success = evaluate_fn(args_dict, ema_nets, stats, method=args_dict['method'])
+    # if (args_dict['task'] != 'pusht_real') and (args_dict['task'] != 'shoe_rack_real'):
+    #     mean_cov, mean_success = evaluate_fn(args_dict, ema_nets, stats, method=args_dict['method'])
 
-        if mean_success > best_mean_success:
-            best_mean_success = mean_success
-            torch.save(nets.state_dict(), f'saved_weights/{run_name}/best_net_weights.pth')
-            torch.save(ema_nets.state_dict(), f'saved_weights/{run_name}/best_ema_net_weights.pth')
+    #     if mean_success > best_mean_success:
+    #         best_mean_success = mean_success
+    #         torch.save(nets.state_dict(), f'saved_weights/{run_name}/best_net_weights.pth')
+    #         torch.save(ema_nets.state_dict(), f'saved_weights/{run_name}/best_ema_net_weights.pth')
 
-        wandb.log({'mean_max_reward': mean_cov, 'mean_success_rate': mean_success}, step=train_step)
-    else:
-        torch.save(nets.state_dict(), f'saved_weights/{run_name}/net_weights_{epoch_idx}.pth')
-        torch.save(ema_nets.state_dict(), f'saved_weights/{run_name}/ema_net_weights_{epoch_idx}.pth')
+    #     wandb.log({'mean_max_reward': mean_cov, 'mean_success_rate': mean_success}, step=train_step)
+    # else:
+    #     torch.save(nets.state_dict(), f'saved_weights/{run_name}/net_weights_{epoch_idx}.pth')
+    #     torch.save(ema_nets.state_dict(), f'saved_weights/{run_name}/ema_net_weights_{epoch_idx}.pth')
+    
+    state = {}
+    ema_state = {}
+    
+    for name, module in nets.items():
+        state[name] = module.module.state_dict()
+    for name, module in ema_nets.items():
+        ema_state[name] = module.state_dict()
+        
+    torch.save(state, f'saved_weights/{run_name}/net_weights_{epoch_idx}.pth')
+    torch.save(ema_state, f'saved_weights/{run_name}/ema_net_weights_{epoch_idx}.pth')
+    
+    print("CHECKPOINT SAVED")
+    
     
     return best_mean_success
 
 def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None, run_name=None, evaluate_fn=None, is_main=True):
+    
     train_step = 0
     best_mean_success = 0
     
@@ -340,7 +356,7 @@ def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None,
                         
                     train_step += 1
 
-            if is_main and (epoch_idx % 50 == 0):
+            if is_main and (epoch_idx == args_dict['num_epochs'] - 1):
                 best_mean_success = save_checkpoint(
                     args_dict, nets, ema, epoch_idx, best_mean_success,
                     stats, run_name, train_step, evaluate_fn
@@ -391,7 +407,6 @@ def main():
         dataset,
         batch_size=args_dict['batch_size'],
         num_workers=8,
-        shuffle=False,
         pin_memory=True,
         sampler=sampler,
         persistent_workers=True
@@ -414,6 +429,7 @@ def main():
         nets[k] = DDP(nets[k], device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     
     # Train
+    
     train(args_dict, nets, dataloader, device, noise_scheduler, stats, run_name if is_main else None, evaluate_fn, is_main=is_main)
     
     dist.destroy_process_group()

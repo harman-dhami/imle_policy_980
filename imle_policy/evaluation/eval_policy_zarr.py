@@ -36,6 +36,16 @@ def evaluate(args_dict, nets, stats, method):
     with torch.no_grad():
         for batch in dataloader:
             obs = batch['obs'].to(device)
+            B, H, D = obs.shape
+            
+            obs = obs.reshape(B, H * D)
+            target_dim = nets['policy_net'].module.global_cond_dim
+            if obs.shape[1] != target_dim:
+                assert target_dim % obs.shape[1] == 0, (
+                    f"Cannot Expand obs {obs.shape[1]} -> {target_dim}"
+                )
+                factor = target_dim // obs.shape[1]
+                obs = obs.repeat(1, factor)
             true_action = batch['action'].to(device)
 
             if method == 'rs_imle':

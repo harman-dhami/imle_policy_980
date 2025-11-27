@@ -1,5 +1,5 @@
 {
-    "dataset_path": "./generated_datasets/stand_bounce.zarr/data",
+    "dataset_path": "/scratch/hsd31/data",
     "obs_dim": 45,
     "action_dim": 4,
     "num_epochs": 10,
@@ -9,7 +9,7 @@
     "pred_horizon": 1,
     "num_cameras": 0,
     "num_diffusion_iters": 1000,
-    "num_workers": 2,
+    "num_workers": 8,
     "num_samples": 8,
     "learning_rate": 1e-4,
     "use_amp": true
