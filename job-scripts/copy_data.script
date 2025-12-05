@@ -1,0 +1,1 @@
+rsync -azh -e 'ssh -p24' ./recorded_data_5_skills_large.zarr dre3@cs-star2.cmpt.sfu.ca:/project/mars-lab/dre3/datasets/

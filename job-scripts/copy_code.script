@@ -1,0 +1,1 @@
+rsync -azh -e 'ssh -p24' --exclude='saved_weights/' --exclude='wandb/' ./ dre3@cs-star2.cmpt.sfu.ca:/home/dre3/Repos/imle_policy_980

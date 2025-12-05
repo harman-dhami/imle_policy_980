@@ -8,9 +8,17 @@ class PolicyDataset(Dataset):
         self.states = zarr.open(f"{dataset_path}/state", mode="r")
         self.actions = zarr.open(f"{dataset_path}/action", mode="r")
         
-        N = int(self.states.shape[0] * dataset_percentage)
-        self.states = self.states[:N]
-        self.actions = self.actions[:N]
+        if isinstance(dataset_percentage, tuple):
+            start_frac, end_frac = dataset_percentage
+            N = self.states.shape[0]
+            start_idx = int(N * start_frac)
+            end_idx = int(N * end_frac)
+            self.states = self.states[start_idx:end_idx]
+            self.actions = self.actions[start_idx:end_idx]
+        else:
+            N = int(self.states.shape[0] * dataset_percentage)
+            self.states = self.states[:N]
+            self.actions = self.actions[:N]
         
         self.stats = {
             "state_mean": np.mean(self.states, axis=0),

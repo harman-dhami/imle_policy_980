@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+stand_bounce.zarr/
+recorded_data_5_skills_large.zarr/
 
 imle_policy/saved_weights/
 imle_policy/datasets/

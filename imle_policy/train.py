@@ -126,7 +126,8 @@ def create_networks(args_dict):
     elif args_dict['method'] == 'rs_imle':
         policy_net = GeneratorConditionalUnet1D(
             input_dim=args_dict['action_dim'],
-            global_cond_dim=args_dict['obs_dim']*args_dict['obs_horizon'])
+            global_cond_dim=args_dict['obs_dim']*args_dict['obs_horizon'],
+            down_dims=args_dict['down_dims'])
         
     elif args_dict['method'] == 'flow_matching':
         policy_net = ConditionalUnet1D(
@@ -236,10 +237,7 @@ def train_rs_imle_step(nets, obs_cond, naction, B, args_dict, device):
     
     pred_actions = nets['policy_net'](repeated_obs_cond, noise)
 
-    
     pred_actions = pred_actions.reshape(B, args_dict['n_samples_per_condition'], *naction.shape[1:])
-
-    
     
     # Compute IMLE loss
     return rs_imle_loss(naction, pred_actions, args_dict['epsilon'])
@@ -355,6 +353,9 @@ def train(args_dict, nets, dataloader, device, noise_scheduler=None, stats=None,
                         wandb.log({'loss': loss_cpu}, step=train_step)
                         
                     train_step += 1
+
+                mean_mse, mean_distance = evaluate_fn(args_dict, nets, stats, method=args_dict['method'])
+                wandb.log({'eval_mean_mse': mean_mse, 'eval_mean_distance': mean_distance}, step=train_step)
 
             if is_main and (epoch_idx == args_dict['num_epochs'] - 1):
                 best_mean_success = save_checkpoint(

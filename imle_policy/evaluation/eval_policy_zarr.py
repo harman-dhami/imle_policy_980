@@ -1,3 +1,4 @@
+from tqdm.auto import tqdm
 import torch
 import numpy as np
 
@@ -19,49 +20,53 @@ def evaluate(args_dict, nets, stats, method):
         pred_horizon=args_dict['pred_horizon'],
         obs_horizon=args_dict['obs_horizon'],
         action_horizon=args_dict['action_horizon'],
-        dataset_percentage=0.1  # sample 10% for quick evaluation
+        dataset_percentage=(0.99, 1.0)  # sample 1% for quick evaluation
     )
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args_dict['batch_size'],
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True
     )
 
     total_mse = 0.0
+    total_distance = 0.0
     total_samples = 0
 
     with torch.no_grad():
-        for batch in dataloader:
-            obs = batch['obs'].to(device)
-            B, H, D = obs.shape
-            
-            obs = obs.reshape(B, H * D)
-            target_dim = nets['policy_net'].module.global_cond_dim
-            if obs.shape[1] != target_dim:
-                assert target_dim % obs.shape[1] == 0, (
-                    f"Cannot Expand obs {obs.shape[1]} -> {target_dim}"
-                )
-                factor = target_dim // obs.shape[1]
-                obs = obs.repeat(1, factor)
-            true_action = batch['action'].to(device)
+        with tqdm(dataloader, desc='Eval Batch', leave=False) as tepoch:
+            for batch in tepoch:
+                obs = batch['obs'].to(device)
+                B, H, D = obs.shape
+                
+                obs = obs.reshape(B, H * D)
+                target_dim = nets['policy_net'].module.global_cond_dim
+                if obs.shape[1] != target_dim:
+                    assert target_dim % obs.shape[1] == 0, (
+                        f"Cannot Expand obs {obs.shape[1]} -> {target_dim}"
+                    )
+                    factor = target_dim // obs.shape[1]
+                    obs = obs.repeat(1, factor)
+                true_action = batch['action'].to(device)
 
-            if method == 'rs_imle':
-                noise = torch.randn(obs.shape[0], *true_action.shape[1:], device=device)
-                pred_action = nets['policy_net'](obs, noise)
-                # average over n_samples_per_condition
-                pred_action = pred_action.mean(dim=1)
-            else:
-                # for diffusion or other methods, fallback to using obs as input
-                pred_action = nets['policy_net'](obs, torch.randn_like(true_action))
+                if method == 'rs_imle':
+                    noise = torch.randn(obs.shape[0], *true_action.shape[1:], device=device)
+                    pred_action = nets['policy_net'](obs, noise)
+                else:
+                    # for diffusion or other methods, fallback to using obs as input
+                    pred_action = nets['policy_net'](obs, torch.randn_like(true_action))
 
-            mse = torch.mean((pred_action - true_action) ** 2).item()
-            total_mse += mse * obs.shape[0]
-            total_samples += obs.shape[0]
+                distances = torch.linalg.norm(pred_action - true_action, dim=2)
+                mse = torch.mean((pred_action - true_action) ** 2).item()
+                total_mse += mse * obs.shape[0]
+                total_distance += distances.sum().item()
+                total_samples += obs.shape[0]
+
+                tepoch.set_postfix(mse=mse)
 
     mean_mse = total_mse / total_samples
-    mean_success = 0.0  # placeholder, can implement real success metric later
+    mean_distance = total_distance / total_samples
 
-    return mean_mse, mean_success
+    return mean_mse, mean_distance
